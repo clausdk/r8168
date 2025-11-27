@@ -35,12 +35,17 @@
 #include <linux/ethtool.h>
 #include <linux/interrupt.h>
 #include <linux/version.h>
+#include <net/page_pool.h>
 #include "r8168_dash.h"
 #include "r8168_realwow.h"
 #include "r8168_fiber.h"
 #include "r8168_rss.h"
 #ifdef ENABLE_LIB_SUPPORT
 #include "r8168_lib.h"
+#endif
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6,10,0)
+#error "r8168 now targets Linux kernel 6.10+ only"
 #endif
 
 /*
@@ -1816,17 +1821,10 @@ struct rtl8168_rx_ring {
         u32 cur_rx; /* Index into the Rx descriptor buffer of next Rx pkt. */
         u32 dirty_rx;
         u32 rdu; /* Rx descriptor unavailable count */
-        //struct RxDesc *RxDescArray; /* 256-aligned Rx descriptor ring */
-        //u32 RxDescAllocSize;
         u64 RxDescPhyAddr[MAX_NUM_RX_DESC]; /* Rx desc physical address*/
-        //dma_addr_t RxPhyAddr;
         struct sk_buff *Rx_skbuff[MAX_NUM_RX_DESC]; /* Rx data buffers */
-        /* TODO: Future optimization for kernel 6.10+
-         * Implement page fragment allocation similar to r8169:
-         * - Use page_pool or netdev_alloc_frag()
-         * - build_skb() instead of per-packet allocation
-         * - Can improve performance by 25-40% but requires careful testing
-         */
+        struct page *rx_page[MAX_NUM_RX_DESC]; /* Rx page-pool pages */
+        struct page_pool *page_pool;
 
         //u16 rdsar_reg; /* Receive Descriptor Start Address */
 };
@@ -2137,6 +2135,8 @@ struct rtl8168_private {
         u32 prev_rx_packets;
         u32 prev_tx_packets;
         u8 coalesce_level; /* 0=low latency, 1=balanced, 2=high throughput */
+        u8 coalesce_dynamic; /* 1=adaptive, 0=manual profile */
+        u8 rx_pp_enabled; /* page-pool RX path */
 #endif
 
         u8  HwIcVerUnknown;

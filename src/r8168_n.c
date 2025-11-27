@@ -7255,6 +7255,137 @@ rtl8168_set_ring_size(struct rtl8168_private *tp, u32 rx, u32 tx)
                 tp->tx_ring[i].num_tx_desc = tx;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,10,0)
+static int rtl8168_init_page_pool(struct rtl8168_private *tp,
+                                  struct rtl8168_rx_ring *ring)
+{
+        struct page_pool_params pp_params = { 0 };
+
+        pp_params.order = 0;
+        pp_params.pool_size = tp->num_rx_desc;
+        pp_params.nid = NUMA_NO_NODE;
+        pp_params.dev = tp_to_dev(tp);
+        pp_params.dma_dir = DMA_FROM_DEVICE;
+        pp_params.max_len = tp->rx_buf_sz;
+        pp_params.offset = RTK_RX_ALIGN;
+        pp_params.flags = PP_FLAG_DMA_MAP;
+
+        ring->page_pool = page_pool_create(&pp_params);
+        if (!ring->page_pool)
+                return -ENOMEM;
+
+        return 0;
+}
+
+static void rtl8168_destroy_page_pool(struct rtl8168_rx_ring *ring)
+{
+        if (!ring->page_pool)
+                return;
+
+        page_pool_destroy(ring->page_pool);
+        ring->page_pool = NULL;
+}
+
+static int rtl8168_alloc_rx_page(struct rtl8168_private *tp,
+                                 struct rtl8168_rx_ring *ring,
+                                 struct RxDesc *desc,
+                                 const u32 cur_rx)
+{
+        struct page *page;
+        dma_addr_t dma;
+
+        page = page_pool_dev_alloc_pages(ring->page_pool);
+        if (!page)
+                return -ENOMEM;
+
+        dma = page_pool_get_dma_addr(page);
+        dma += RTK_RX_ALIGN;
+
+        ring->rx_page[cur_rx] = page;
+        ring->RxDescPhyAddr[cur_rx] = dma;
+        desc->addr = cpu_to_le64(dma);
+        wmb();
+        rtl8168_mark_to_asic(desc, tp->rx_buf_sz);
+
+        return 0;
+}
+
+struct rtl8168_coalesce_profile {
+        u16 reg;
+        u32 usecs;
+        u32 frames;
+};
+
+static const struct rtl8168_coalesce_profile rtl8168_coalesce_profiles[] = {
+        { 0x0000, 0,    0 },   /* Level 0: low latency */
+        { 0x3f30, 50,   32 },  /* Level 1: balanced */
+        { 0x5f51, 100,  64 },  /* Level 2: throughput */
+};
+
+static void rtl8168_apply_coalesce_profile(struct rtl8168_private *tp, u8 level)
+{
+        level = min_t(u8, level, ARRAY_SIZE(rtl8168_coalesce_profiles) - 1);
+        tp->coalesce_level = level;
+        RTL_W16(tp, IntrMitigate, rtl8168_coalesce_profiles[level].reg);
+}
+
+static void rtl8168_fill_coalesce(struct rtl8168_private *tp,
+                                  struct ethtool_coalesce *coal)
+{
+        const struct rtl8168_coalesce_profile *profile;
+
+        profile = &rtl8168_coalesce_profiles[min_t(u8, tp->coalesce_level,
+                                                   ARRAY_SIZE(rtl8168_coalesce_profiles) - 1)];
+
+        memset(coal, 0, sizeof(*coal));
+        coal->cmd = ETHTOOL_GCOALESCE;
+        coal->rx_coalesce_usecs = profile->usecs;
+        coal->tx_coalesce_usecs = profile->usecs;
+        coal->rx_max_coalesced_frames = profile->frames;
+        coal->tx_max_coalesced_frames = profile->frames;
+        coal->use_adaptive_rx_coalesce = tp->coalesce_dynamic;
+        coal->use_adaptive_tx_coalesce = tp->coalesce_dynamic;
+}
+
+static u8 rtl8168_level_from_usecs(u32 usecs)
+{
+        if (usecs <= rtl8168_coalesce_profiles[1].usecs / 2)
+                return 0;
+        if (usecs <= rtl8168_coalesce_profiles[1].usecs + 10)
+                return 1;
+        return 2;
+}
+
+static int rtl8168_get_coalesce(struct net_device *dev,
+                                struct ethtool_coalesce *coal)
+{
+        struct rtl8168_private *tp = netdev_priv(dev);
+
+        rtl8168_fill_coalesce(tp, coal);
+        return 0;
+}
+
+static int rtl8168_set_coalesce(struct net_device *dev,
+                                struct ethtool_coalesce *coal)
+{
+        struct rtl8168_private *tp = netdev_priv(dev);
+        u8 level;
+
+        /* Only basic RX/TX coalescing knobs are supported */
+        if (coal->rx_max_coalesced_frames != coal->tx_max_coalesced_frames &&
+            coal->tx_max_coalesced_frames)
+                return -EOPNOTSUPP;
+
+        tp->coalesce_dynamic = coal->use_adaptive_rx_coalesce ||
+                               coal->use_adaptive_tx_coalesce;
+
+        level = rtl8168_level_from_usecs(coal->rx_coalesce_usecs);
+        rtl8168_apply_coalesce_profile(tp, level);
+
+        return 0;
+}
+#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(6,10,0) */
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5,17,0)
 static void rtl8168_get_ringparam(struct net_device *dev,
@@ -8229,6 +8360,10 @@ static const struct ethtool_ops rtl8168_ethtool_ops = {
         .get_ringparam      = rtl8168_get_ringparam,
         .set_ringparam      = rtl8168_set_ringparam,
 #endif //LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,10,0)
+        .get_coalesce       = rtl8168_get_coalesce,
+        .set_coalesce       = rtl8168_set_coalesce,
+#endif
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
         .get_settings       = rtl8168_get_settings,
         .set_settings       = rtl8168_set_settings,
@@ -26107,6 +26242,10 @@ rtl8168_init_software_variable(struct net_device *dev)
         tp->ring_lib_enabled = 1;
 #endif
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,10,0)
+        tp->rx_pp_enabled = 1;
+#endif
+
         if (tp->mcfg == CFG_METHOD_DEFAULT)
                 disable_wol_support = 1;
 
@@ -28656,6 +28795,11 @@ rtl8168_init_one(struct pci_dev *pdev,
 
         rtl8168_init_software_variable(dev);
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,10,0)
+        tp->coalesce_dynamic = 1;
+        rtl8168_apply_coalesce_profile(tp, 1);
+#endif
+
         RTL_NET_DEVICE_OPS(rtl8168_netdev_ops);
 
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2,4,22)
@@ -30569,6 +30713,14 @@ _rtl8168_rx_clear(struct rtl8168_private *tp, struct rtl8168_rx_ring *ring)
                                             i);
                         ring->Rx_skbuff[i] = NULL;
                 }
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,10,0)
+                if (ring->rx_page[i]) {
+                        page_pool_put_full_page(ring->page_pool,
+                                                ring->rx_page[i],
+                                                false);
+                        ring->rx_page[i] = NULL;
+                }
+#endif
         }
 }
 
@@ -30577,8 +30729,12 @@ rtl8168_rx_clear(struct rtl8168_private *tp)
 {
         int i;
 
-        for (i = 0; i < tp->num_rx_rings; i++)
+        for (i = 0; i < tp->num_rx_rings; i++) {
                 _rtl8168_rx_clear(tp, &tp->rx_ring[i]);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,10,0)
+                rtl8168_destroy_page_pool(&tp->rx_ring[i]);
+#endif
+        }
 }
 
 static u32
@@ -30594,6 +30750,22 @@ rtl8168_rx_fill(struct rtl8168_private *tp,
         for (cur = start; end - cur > 0; cur++) {
                 int ret, i = cur % tp->num_rx_desc;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,10,0)
+                if (tp->rx_pp_enabled && ring->page_pool) {
+                        if (ring->rx_page[i])
+                                continue;
+
+                        ret = rtl8168_alloc_rx_page(tp,
+                                                    ring,
+                                                    rtl8168_get_rxdesc(tp,
+                                                                       tp->RxDescArray,
+                                                                       i, ring->index),
+                                                    i);
+                        if (ret < 0)
+                                break;
+                        continue;
+                }
+#endif
                 if (ring->Rx_skbuff[i])
                         continue;
 
@@ -30718,6 +30890,20 @@ rtl8168_init_ring(struct net_device *dev)
                 struct rtl8168_rx_ring *ring = &tp->rx_ring[i];
 
                 memset(ring->Rx_skbuff, 0x0, sizeof(ring->Rx_skbuff));
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,10,0)
+                memset(ring->rx_page, 0x0, sizeof(ring->rx_page));
+                ring->page_pool = NULL;
+                if (tp->rx_pp_enabled) {
+                        if (rtl8168_init_page_pool(tp, ring) < 0) {
+                                int j;
+                                tp->rx_pp_enabled = 0;
+                                rtl8168_destroy_page_pool(ring);
+                                for (j = 0; j < i; j++)
+                                        rtl8168_destroy_page_pool(&tp->rx_ring[j]);
+                                netdev_warn(dev, "page-pool init failed, falling back to skb path\n");
+                        }
+                }
+#endif
                 if (rtl8168_rx_fill(tp, ring, dev, 0, tp->num_rx_desc, 0) != tp->num_rx_desc)
                         goto err_out;
 
@@ -31815,42 +32001,87 @@ rtl8168_rx_interrupt(struct net_device *dev,
                         goto release_descriptor;
                 }
 
-                skb = RTL_ALLOC_SKB_INTR(&tp->r8168napi[ring_index].napi, pkt_size + RTK_RX_ALIGN);
-                if (unlikely(!skb)) {
-                        RTLDEV->stats.rx_dropped++;
-                        RTLDEV->stats.rx_length_errors++;
-                        //netdev_err(tp->dev, "Failed to allocate RX skb!\n");
-                        goto release_descriptor;
-                }
-
-                rx_buf_phy_addr = ring->RxDescPhyAddr[entry];
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6,10,0)
-                /* On coherent architectures with modern kernels, sync only actual packet size */
-                dma_sync_single_for_cpu(tp_to_dev(tp),
-                                        rx_buf_phy_addr, pkt_size,
-                                        DMA_FROM_DEVICE);
-#else
-                dma_sync_single_for_cpu(tp_to_dev(tp),
-                                        rx_buf_phy_addr, tp->rx_buf_sz,
-                                        DMA_FROM_DEVICE);
-#endif
+                if (tp->rx_pp_enabled && ring->page_pool) {
+                        struct page *page = ring->rx_page[entry];
+                        void *data;
 
-                rx_buf = ring->Rx_skbuff[entry]->data;
-                if (!R8168_USE_NAPI_ALLOC_SKB)
+                        if (unlikely(!page)) {
+                                RTLDEV->stats.rx_dropped++;
+                                goto release_descriptor_pp;
+                        }
+
+                        rx_buf_phy_addr = ring->RxDescPhyAddr[entry];
+                        dma_sync_single_for_cpu(tp_to_dev(tp),
+                                                rx_buf_phy_addr, pkt_size,
+                                                DMA_FROM_DEVICE);
+
+                        data = page_address(page);
+                        if (unlikely(!data)) {
+                                RTLDEV->stats.rx_dropped++;
+                                goto release_descriptor_pp;
+                        }
+
+                        skb = build_skb(data, PAGE_SIZE);
+                        if (unlikely(!skb)) {
+                                RTLDEV->stats.rx_dropped++;
+                                goto release_descriptor_pp;
+                        }
+
                         skb_reserve(skb, RTK_RX_ALIGN);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,4,37)
-                prefetch(rx_buf);
+                        skb_put(skb, pkt_size);
+                        skb_mark_for_recycle(skb);
+
+                        ring->rx_page[entry] = NULL;
+                        if (rtl8168_alloc_rx_page(tp, ring, desc, entry) < 0) {
+                                RTLDEV->stats.rx_dropped++;
+                                ring->rx_page[entry] = page;
+                                dev_kfree_skb_any(skb);
+                                skb = NULL;
+                                goto release_descriptor_pp;
+                        }
+                        page_pool_release_page(ring->page_pool, page);
+                } else
 #endif
-                eth_copy_and_sum(skb, rx_buf, pkt_size, 0);
+                {
+                        skb = RTL_ALLOC_SKB_INTR(&tp->r8168napi[ring_index].napi, pkt_size + RTK_RX_ALIGN);
+                        if (unlikely(!skb)) {
+                                RTLDEV->stats.rx_dropped++;
+                                RTLDEV->stats.rx_length_errors++;
+                                //netdev_err(tp->dev, "Failed to allocate RX skb!\n");
+                                goto release_descriptor;
+                        }
+
+                        rx_buf_phy_addr = ring->RxDescPhyAddr[entry];
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,10,0)
+                        /* On coherent architectures with modern kernels, sync only actual packet size */
+                        dma_sync_single_for_cpu(tp_to_dev(tp),
+                                                rx_buf_phy_addr, pkt_size,
+                                                DMA_FROM_DEVICE);
+#else
+                        dma_sync_single_for_cpu(tp_to_dev(tp),
+                                                rx_buf_phy_addr, tp->rx_buf_sz,
+                                                DMA_FROM_DEVICE);
+#endif
+
+                        rx_buf = ring->Rx_skbuff[entry]->data;
+                        if (!R8168_USE_NAPI_ALLOC_SKB)
+                                skb_reserve(skb, RTK_RX_ALIGN);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,4,37)
+                        prefetch(rx_buf);
+#endif
+                        eth_copy_and_sum(skb, rx_buf, pkt_size, 0);
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6,10,0)
-                /* Sync back only what we used */
-                dma_sync_single_for_device(tp_to_dev(tp), rx_buf_phy_addr,
-                                           pkt_size, DMA_FROM_DEVICE);
+                        /* Sync back only what we used */
+                        dma_sync_single_for_device(tp_to_dev(tp), rx_buf_phy_addr,
+                                                   pkt_size, DMA_FROM_DEVICE);
 #else
-                dma_sync_single_for_device(tp_to_dev(tp), rx_buf_phy_addr,
-                                           tp->rx_buf_sz, DMA_FROM_DEVICE);
+                        dma_sync_single_for_device(tp_to_dev(tp),
+                                                   rx_buf_phy_addr, tp->rx_buf_sz,
+                                                   DMA_FROM_DEVICE);
 #endif
+                }
 
 #ifdef ENABLE_RSS_SUPPORT
                 rtl8168_rx_hash(tp, (struct RxDescV2 *)desc, skb);
@@ -31874,7 +32105,16 @@ rtl8168_rx_interrupt(struct net_device *dev,
                 RTLDEV->stats.rx_packets++;
 
 release_descriptor:
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,10,0)
+                if (!tp->rx_pp_enabled || !ring->page_pool)
+#endif
                 rtl8168_mark_to_asic(desc, tp->rx_buf_sz);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,10,0)
+                continue;
+
+release_descriptor_pp:
+                rtl8168_mark_to_asic(desc, tp->rx_buf_sz);
+#endif
         }
 
         count = cur_rx - ring->cur_rx;
@@ -32086,7 +32326,9 @@ static irqreturn_t rtl8168_interrupt_msix(int irq, void *dev_instance)
 static void rtl8168_update_intr_coalesce(struct rtl8168_private *tp)
 {
         u32 total_packets;
-        u16 coalesce_val;
+
+        if (!tp->coalesce_dynamic)
+                return;
 
         total_packets = tp->dynamic_aspm_packet_count;
 
@@ -32095,25 +32337,16 @@ static void rtl8168_update_intr_coalesce(struct rtl8168_private *tp)
          * Low traffic: minimal coalescing for latency */
         if (total_packets > 10000) {
                 /* High throughput mode */
-                if (tp->coalesce_level != 2) {
-                        tp->coalesce_level = 2;
-                        coalesce_val = 0x5f51; /* Default aggressive */
-                        RTL_W16(tp, IntrMitigate, coalesce_val);
-                }
+                if (tp->coalesce_level != 2)
+                        rtl8168_apply_coalesce_profile(tp, 2);
         } else if (total_packets > 1000) {
                 /* Balanced mode */
-                if (tp->coalesce_level != 1) {
-                        tp->coalesce_level = 1;
-                        coalesce_val = 0x3f30; /* Moderate */
-                        RTL_W16(tp, IntrMitigate, coalesce_val);
-                }
+                if (tp->coalesce_level != 1)
+                        rtl8168_apply_coalesce_profile(tp, 1);
         } else {
                 /* Low latency mode */
-                if (tp->coalesce_level != 0) {
-                        tp->coalesce_level = 0;
-                        coalesce_val = 0x0000; /* Minimal coalescing */
-                        RTL_W16(tp, IntrMitigate, coalesce_val);
-                }
+                if (tp->coalesce_level != 0)
+                        rtl8168_apply_coalesce_profile(tp, 0);
         }
 }
 #endif
