@@ -35,7 +35,19 @@
 #include <linux/ethtool.h>
 #include <linux/interrupt.h>
 #include <linux/version.h>
+#if defined(__has_include)
+#if __has_include(<linux/page_pool.h>)
+#include <linux/page_pool.h>
+#elif __has_include(<net/page_pool.h>)
 #include <net/page_pool.h>
+#elif __has_include(<net/page_pool/helpers.h>)
+#include <net/page_pool/helpers.h>
+#else
+#error "page pool header not found"
+#endif
+#else
+#include <net/page_pool.h>
+#endif
 #include "r8168_dash.h"
 #include "r8168_realwow.h"
 #include "r8168_fiber.h"
