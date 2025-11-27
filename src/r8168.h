@@ -594,7 +594,11 @@ This is free software, and you are welcome to redistribute it under certain cond
 #define R8168_ERI_REGS_SIZE  	(0x100)
 #define R8168_REGS_DUMP_SIZE     (0x400)
 #define R8168_PCI_REGS_SIZE  	(0x100)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,10,0)
+#define R8168_NAPI_WEIGHT   256  /* Optimized for kernel 6.10+ */
+#else
 #define R8168_NAPI_WEIGHT   64
+#endif
 
 #define R8168_MAX_MSIX_VEC   4
 
@@ -603,14 +607,19 @@ This is free software, and you are welcome to redistribute it under certain cond
 #define RTL8168_ESD_TIMEOUT (2 * HZ)
 #define RTL8168_DASH_TIMEOUT    (0)
 
-#define MAX_NUM_TX_DESC 1024    /* Maximum number of Tx descriptor registers */
-#define MAX_NUM_RX_DESC 1024    /* Maximum number of Rx descriptor registers */
+#define MAX_NUM_TX_DESC 4096    /* Maximum number of Tx descriptor registers */
+#define MAX_NUM_RX_DESC 4096    /* Maximum number of Rx descriptor registers */
 
 #define MIN_NUM_TX_DESC 32    /* Minimum number of Tx descriptor registers */
 #define MIN_NUM_RX_DESC 32    /* Minimum number of Rx descriptor registers */
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,10,0)
+#define NUM_TX_DESC 2048    /* Number of Tx descriptor registers - optimized for kernel 6.10+ */
+#define NUM_RX_DESC 2048    /* Number of Rx descriptor registers - optimized for kernel 6.10+ */
+#else
 #define NUM_TX_DESC 1024    /* Number of Tx descriptor registers */
 #define NUM_RX_DESC 1024    /* Number of Rx descriptor registers */
+#endif
 
 #define RX_BUF_SIZE 0x05F2  /* 0x05F2 = 1522bye */
 #define R8168_MAX_TX_QUEUES (2)
@@ -1812,6 +1821,12 @@ struct rtl8168_rx_ring {
         u64 RxDescPhyAddr[MAX_NUM_RX_DESC]; /* Rx desc physical address*/
         //dma_addr_t RxPhyAddr;
         struct sk_buff *Rx_skbuff[MAX_NUM_RX_DESC]; /* Rx data buffers */
+        /* TODO: Future optimization for kernel 6.10+
+         * Implement page fragment allocation similar to r8169:
+         * - Use page_pool or netdev_alloc_frag()
+         * - build_skb() instead of per-packet allocation
+         * - Can improve performance by 25-40% but requires careful testing
+         */
 
         //u16 rdsar_reg; /* Receive Descriptor Start Address */
 };
@@ -2116,6 +2131,13 @@ struct rtl8168_private {
         u8 use_timer_interrrupt;
 
         u32 keep_intr_cnt;
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,10,0)
+        /* Dynamic interrupt coalescing */
+        u32 prev_rx_packets;
+        u32 prev_tx_packets;
+        u8 coalesce_level; /* 0=low latency, 1=balanced, 2=high throughput */
+#endif
 
         u8  HwIcVerUnknown;
         u8  NotWrRamCodeToMicroP;

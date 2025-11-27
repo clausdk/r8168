@@ -31578,16 +31578,23 @@ rtl8168_tx_interrupt(struct rtl8168_tx_ring *ring, int budget)
                 struct ring_info *tx_skb = ring->tx_skb + entry;
                 u32 status;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,4,37)
+                /* Prefetch next descriptor */
+                if (likely(tx_left > 1)) {
+                        unsigned int next_entry = (dirty_tx + 1) % ring->num_tx_desc;
+                        prefetch(&ring->TxDescArray[next_entry]);
+                }
+#endif
                 rmb();
                 status = le32_to_cpu(READ_ONCE(ring->TxDescArray[entry].opts1));
-                if (status & DescOwn)
+                if (unlikely(status & DescOwn))
                         break;
 
                 rtl8168_unmap_tx_skb(tp->pci_dev,
                                      tx_skb,
                                      ring->TxDescArray + entry);
 
-                if (tx_skb->skb != NULL) {
+                if (likely(tx_skb->skb != NULL)) {
                         /* update the statistics for this packet */
                         total_bytes += tx_skb->bytecount;
                         total_packets += tx_skb->gso_segs;
@@ -31599,7 +31606,7 @@ rtl8168_tx_interrupt(struct rtl8168_tx_ring *ring, int budget)
                 tx_left--;
         }
 
-        if (total_packets) {
+        if (likely(total_packets)) {
                 netdev_tx_completed_queue(txring_txq(ring),
                                           total_packets, total_bytes);
 
@@ -31609,15 +31616,15 @@ rtl8168_tx_interrupt(struct rtl8168_tx_ring *ring, int budget)
 
         tp->dynamic_aspm_packet_count -= tx_left;
 
-        if (ring->dirty_tx != dirty_tx) {
+        if (likely(ring->dirty_tx != dirty_tx)) {
                 WRITE_ONCE(ring->dirty_tx, dirty_tx);
                 smp_wmb();
-                if (netif_queue_stopped(dev) &&
+                if (unlikely(netif_queue_stopped(dev)) &&
                     (rtl8168_tx_slots_avail(tp, ring))) {
                         netif_start_subqueue(dev, ring->index);
                 }
                 smp_rmb();
-                if (READ_ONCE(ring->cur_tx) != dirty_tx)
+                if (likely(READ_ONCE(ring->cur_tx) != dirty_tx))
                         rtl8168_doorbell(ring);
         }
 }
@@ -31757,11 +31764,18 @@ rtl8168_rx_interrupt(struct net_device *dev,
 
                 entry = cur_rx % tp->num_rx_desc;
                 desc = rtl8168_get_rxdesc(tp, tp->RxDescArray, entry, ring_index);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,4,37)
+                /* Prefetch next descriptor */
+                if (likely(rx_left > 1)) {
+                        unsigned int next_entry = (cur_rx + 1) % tp->num_rx_desc;
+                        prefetch(rtl8168_get_rxdesc(tp, tp->RxDescArray, next_entry, ring_index));
+                }
+#endif
                 status = le32_to_cpu(READ_ONCE(desc->opts1));
-                if (status & DescOwn) {
+                if (unlikely(status & DescOwn)) {
                         RTL_R8(tp, tp->imr_reg[0]);
                         status = le32_to_cpu(READ_ONCE(desc->opts1));
-                        if (status & DescOwn)
+                        if (unlikely(status & DescOwn))
                                 break;
                 }
 
@@ -31802,7 +31816,7 @@ rtl8168_rx_interrupt(struct net_device *dev,
                 }
 
                 skb = RTL_ALLOC_SKB_INTR(&tp->r8168napi[ring_index].napi, pkt_size + RTK_RX_ALIGN);
-                if (!skb) {
+                if (unlikely(!skb)) {
                         RTLDEV->stats.rx_dropped++;
                         RTLDEV->stats.rx_length_errors++;
                         //netdev_err(tp->dev, "Failed to allocate RX skb!\n");
@@ -31810,9 +31824,16 @@ rtl8168_rx_interrupt(struct net_device *dev,
                 }
 
                 rx_buf_phy_addr = ring->RxDescPhyAddr[entry];
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,10,0)
+                /* On coherent architectures with modern kernels, sync only actual packet size */
+                dma_sync_single_for_cpu(tp_to_dev(tp),
+                                        rx_buf_phy_addr, pkt_size,
+                                        DMA_FROM_DEVICE);
+#else
                 dma_sync_single_for_cpu(tp_to_dev(tp),
                                         rx_buf_phy_addr, tp->rx_buf_sz,
                                         DMA_FROM_DEVICE);
+#endif
 
                 rx_buf = ring->Rx_skbuff[entry]->data;
                 if (!R8168_USE_NAPI_ALLOC_SKB)
@@ -31822,8 +31843,14 @@ rtl8168_rx_interrupt(struct net_device *dev,
 #endif
                 eth_copy_and_sum(skb, rx_buf, pkt_size, 0);
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,10,0)
+                /* Sync back only what we used */
+                dma_sync_single_for_device(tp_to_dev(tp), rx_buf_phy_addr,
+                                           pkt_size, DMA_FROM_DEVICE);
+#else
                 dma_sync_single_for_device(tp_to_dev(tp), rx_buf_phy_addr,
                                            tp->rx_buf_sz, DMA_FROM_DEVICE);
+#endif
 
 #ifdef ENABLE_RSS_SUPPORT
                 rtl8168_rx_hash(tp, (struct RxDescV2 *)desc, skb);
@@ -32055,6 +32082,42 @@ static irqreturn_t rtl8168_interrupt_msix(int irq, void *dev_instance)
 }
 
 #ifdef CONFIG_R8168_NAPI
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,10,0)
+static void rtl8168_update_intr_coalesce(struct rtl8168_private *tp)
+{
+        u32 total_packets;
+        u16 coalesce_val;
+
+        total_packets = tp->dynamic_aspm_packet_count;
+
+        /* Adjust coalescing based on packet rate
+         * High traffic: aggressive coalescing for throughput
+         * Low traffic: minimal coalescing for latency */
+        if (total_packets > 10000) {
+                /* High throughput mode */
+                if (tp->coalesce_level != 2) {
+                        tp->coalesce_level = 2;
+                        coalesce_val = 0x5f51; /* Default aggressive */
+                        RTL_W16(tp, IntrMitigate, coalesce_val);
+                }
+        } else if (total_packets > 1000) {
+                /* Balanced mode */
+                if (tp->coalesce_level != 1) {
+                        tp->coalesce_level = 1;
+                        coalesce_val = 0x3f30; /* Moderate */
+                        RTL_W16(tp, IntrMitigate, coalesce_val);
+                }
+        } else {
+                /* Low latency mode */
+                if (tp->coalesce_level != 0) {
+                        tp->coalesce_level = 0;
+                        coalesce_val = 0x0000; /* Minimal coalescing */
+                        RTL_W16(tp, IntrMitigate, coalesce_val);
+                }
+        }
+}
+#endif
+
 static int rtl8168_poll_vector(napi_ptr napi, napi_budget budget, bool all_rx_q)
 {
         struct r8168_napi *r8168napi = RTL_GET_PRIV(napi, struct r8168_napi);
@@ -32077,6 +32140,12 @@ static int rtl8168_poll_vector(napi_ptr napi, napi_budget budget, bool all_rx_q)
         work_done = min(work_done, work_to_do);
 
         RTL_NAPI_QUOTA_UPDATE(dev, work_done, budget);
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,10,0)
+        /* Update dynamic interrupt coalescing periodically */
+        if (message_id == 0)
+                rtl8168_update_intr_coalesce(tp);
+#endif
 
         if (work_done < work_to_do) {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,10,0)
