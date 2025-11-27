@@ -746,6 +746,18 @@ static inline void eth_hw_addr_random(struct net_device *dev)
 }
 #endif
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,10,0)
+#ifndef ETHTOOL_COALESCE_USECS
+#define ETHTOOL_COALESCE_USECS            BIT(0)
+#endif
+#ifndef ETHTOOL_COALESCE_MAX_FRAMES
+#define ETHTOOL_COALESCE_MAX_FRAMES       BIT(1)
+#endif
+#ifndef ETHTOOL_COALESCE_USE_ADAPTIVE
+#define ETHTOOL_COALESCE_USE_ADAPTIVE     BIT(2)
+#endif
+#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(6,10,0) */
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
 #undef ethtool_ops
 #define ethtool_ops _kc_ethtool_ops
@@ -8393,6 +8405,9 @@ static const struct ethtool_ops rtl8168_ethtool_ops = {
         .set_ringparam      = rtl8168_set_ringparam,
 #endif //LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6,10,0)
+        .supported_coalesce_params = ETHTOOL_COALESCE_USECS |
+                                     ETHTOOL_COALESCE_MAX_FRAMES |
+                                     ETHTOOL_COALESCE_USE_ADAPTIVE,
         .get_coalesce       = rtl8168_get_coalesce,
         .set_coalesce       = rtl8168_set_coalesce,
 #endif
