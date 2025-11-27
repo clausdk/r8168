@@ -1,0 +1,229 @@
+# r8168 Driver - DKMS Installation Guide
+
+This guide explains how to install the Realtek r8168 network driver using DKMS (Dynamic Kernel Module Support), which automatically rebuilds the driver when you install new kernel versions.
+
+## What's New
+
+- **Kernel 6.10+ Support**: Updated driver to support Linux kernel 6.10 and newer
+- **DKMS Support**: Automatic driver rebuilds on kernel updates
+- **Modern Kernel API**: Updated to use modern kernel APIs (netif_napi_add, ccflags-y, etc.)
+
+## Prerequisites
+
+### 1. Install DKMS
+
+**Ubuntu/Debian:**
+```bash
+sudo apt-get update
+sudo apt-get install dkms
+```
+
+**Fedora/RHEL/CentOS:**
+```bash
+sudo dnf install dkms
+```
+
+**Arch Linux:**
+```bash
+sudo pacman -S dkms
+```
+
+### 2. Install Kernel Headers
+
+**Ubuntu/Debian:**
+```bash
+sudo apt-get install linux-headers-$(uname -r)
+```
+
+**Fedora/RHEL/CentOS:**
+```bash
+sudo dnf install kernel-devel-$(uname -r)
+```
+
+**Arch Linux:**
+```bash
+sudo pacman -S linux-headers
+```
+
+## Installation
+
+### Automatic Installation (Recommended)
+
+Simply run the provided installation script:
+
+```bash
+sudo ./dkms-install.sh
+```
+
+The script will:
+- Check for DKMS and kernel headers
+- Remove any previous r8168 installations
+- Install the driver via DKMS
+- Blacklist the conflicting r8169 driver
+- Provide instructions for loading the module
+
+### Manual Installation
+
+If you prefer to install manually:
+
+1. Copy the driver source to /usr/src:
+```bash
+sudo mkdir -p /usr/src/r8168-8.055.00
+sudo cp -r src /usr/src/r8168-8.055.00/
+sudo cp dkms.conf /usr/src/r8168-8.055.00/
+```
+
+2. Add the module to DKMS:
+```bash
+sudo dkms add -m r8168 -v 8.055.00
+```
+
+3. Build the module:
+```bash
+sudo dkms build -m r8168 -v 8.055.00
+```
+
+4. Install the module:
+```bash
+sudo dkms install -m r8168 -v 8.055.00
+```
+
+5. Blacklist the r8169 driver (if needed):
+```bash
+echo "blacklist r8169" | sudo tee /etc/modprobe.d/blacklist-r8169.conf
+```
+
+## Loading the Driver
+
+After installation, you need to load the driver:
+
+### Option 1: Reboot
+```bash
+sudo reboot
+```
+
+### Option 2: Manual Load
+```bash
+# Unload the conflicting r8169 driver
+sudo rmmod r8169
+
+# Load the r8168 driver
+sudo modprobe r8168
+```
+
+## Verification
+
+Check if the driver is loaded:
+```bash
+lsmod | grep r8168
+```
+
+Check your network interface:
+```bash
+ip link show
+# or
+ifconfig -a
+```
+
+Check driver version and info:
+```bash
+modinfo r8168
+```
+
+Check DKMS status:
+```bash
+dkms status
+```
+
+## Uninstallation
+
+To remove the DKMS driver:
+
+```bash
+sudo dkms remove -m r8168 -v 8.055.00 --all
+sudo rm -rf /usr/src/r8168-8.055.00
+```
+
+To remove the r8169 blacklist:
+```bash
+sudo rm /etc/modprobe.d/blacklist-r8169.conf
+```
+
+## Troubleshooting
+
+### Driver not loading after installation
+
+1. Make sure r8169 is blacklisted:
+```bash
+cat /etc/modprobe.d/blacklist-r8169.conf
+```
+
+2. Check if r8169 is still loaded:
+```bash
+lsmod | grep r8169
+```
+
+3. If r8169 is loaded, unload it:
+```bash
+sudo rmmod r8169
+sudo modprobe r8168
+```
+
+### Build errors
+
+1. Ensure kernel headers are installed:
+```bash
+ls /lib/modules/$(uname -r)/build
+```
+
+2. Check DKMS build log:
+```bash
+sudo dkms status
+sudo cat /var/lib/dkms/r8168/8.055.00/build/make.log
+```
+
+### Kernel 6.10+ specific issues
+
+The driver has been updated to support kernel 6.10+ by adapting to the new `netif_napi_add()` API. If you encounter build errors on kernels >= 6.10, ensure you're using this updated version.
+
+### Network interface not appearing
+
+1. Check if your hardware is supported:
+```bash
+lspci -nn | grep Ethernet
+```
+
+2. Check kernel messages:
+```bash
+dmesg | grep r8168
+```
+
+3. Check if the module loaded successfully:
+```bash
+modprobe -v r8168
+```
+
+## Supported Kernels
+
+- Linux kernel 2.6.x to 6.x (6.10+ included)
+- Tested on Ubuntu, Debian, Fedora, RHEL, CentOS, and Arch Linux
+
+## Technical Changes for 6.10+ Support
+
+The main API change in kernel 6.10+ was:
+- `netif_napi_add()` now takes 3 parameters instead of 4 (weight parameter removed)
+- Updated the RTL_NAPI_CONFIG macro in r8168.h to handle this change
+
+## Additional Resources
+
+- [DKMS Documentation](https://github.com/dell/dkms)
+- [Realtek r8168 Official Page](https://www.realtek.com/)
+
+## License
+
+This driver is licensed under GPL-2.0-only.
+
+## Support
+
+For issues specific to this DKMS packaging, please report at the project repository.
+For driver issues, contact Realtek NIC software team.

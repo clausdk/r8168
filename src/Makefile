@@ -53,84 +53,107 @@ ENABLE_GIGA_LITE = y
 ifneq ($(KERNELRELEASE),)
 	obj-m := r8168.o
 	r8168-objs := r8168_n.o r8168_asf.o rtl_eeprom.o rtltool.o
+	# Use ccflags-y for modern kernels (>= 2.6.24), but keep EXTRA_CFLAGS for compatibility
 	ifeq ($(CONFIG_SOC_LAN), y)
+		ccflags-y += -DCONFIG_SOC_LAN
 		EXTRA_CFLAGS += -DCONFIG_SOC_LAN
 	endif
 	ifeq ($(ENABLE_FIBER_SUPPORT), y)
 	    r8168-objs += r8168_fiber.o
+		ccflags-y += -DENABLE_FIBER_SUPPORT
 		EXTRA_CFLAGS += -DENABLE_FIBER_SUPPORT
 	endif
 	ifeq ($(ENABLE_REALWOW_SUPPORT), y)
 	    r8168-objs += r8168_realwow.o
+		ccflags-y += -DENABLE_REALWOW_SUPPORT
 		EXTRA_CFLAGS += -DENABLE_REALWOW_SUPPORT
 	endif
 	ifeq ($(ENABLE_DASH_SUPPORT), y)
 	    r8168-objs += r8168_dash.o
+		ccflags-y += -DENABLE_DASH_SUPPORT
 		EXTRA_CFLAGS += -DENABLE_DASH_SUPPORT
 	endif
 	ifeq ($(ENABLE_DASH_PRINTER_SUPPORT), y)
 	    r8168-objs += r8168_dash.o
+		ccflags-y += -DENABLE_DASH_SUPPORT -DENABLE_DASH_PRINTER_SUPPORT
 		EXTRA_CFLAGS += -DENABLE_DASH_SUPPORT -DENABLE_DASH_PRINTER_SUPPORT
 	endif
 	ifneq ($(ENABLE_RSS_SUPPORT), y)
+		ccflags-y += -DCONFIG_R8168_NAPI
 		EXTRA_CFLAGS += -DCONFIG_R8168_NAPI
 	endif
+	ccflags-y += -DCONFIG_R8168_VLAN
 	EXTRA_CFLAGS += -DCONFIG_R8168_VLAN
 	ifeq ($(CONFIG_DOWN_SPEED_100), y)
+		ccflags-y += -DCONFIG_DOWN_SPEED_100
 		EXTRA_CFLAGS += -DCONFIG_DOWN_SPEED_100
 	endif
 	ifeq ($(CONFIG_ASPM), y)
+		ccflags-y += -DCONFIG_ASPM
 		EXTRA_CFLAGS += -DCONFIG_ASPM
 	endif
 	ifeq ($(ENABLE_S5WOL), y)
+		ccflags-y += -DENABLE_S5WOL
 		EXTRA_CFLAGS += -DENABLE_S5WOL
 	endif
 	ifeq ($(ENABLE_S5_KEEP_CURR_MAC), y)
+		ccflags-y += -DENABLE_S5_KEEP_CURR_MAC
 		EXTRA_CFLAGS += -DENABLE_S5_KEEP_CURR_MAC
 	endif
 	ifeq ($(ENABLE_EEE), y)
+		ccflags-y += -DENABLE_EEE
 		EXTRA_CFLAGS += -DENABLE_EEE
 	endif
 	ifeq ($(ENABLE_S0_MAGIC_PACKET), y)
+		ccflags-y += -DENABLE_S0_MAGIC_PACKET
 		EXTRA_CFLAGS += -DENABLE_S0_MAGIC_PACKET
 	endif
 	ifeq ($(CONFIG_DYNAMIC_ASPM), y)
+		ccflags-y += -DCONFIG_DYNAMIC_ASPM
 		EXTRA_CFLAGS += -DCONFIG_DYNAMIC_ASPM
 	endif
 	ifeq ($(ENABLE_USE_FIRMWARE_FILE), y)
 		r8168-objs += r8168_firmware.o
+		ccflags-y += -DENABLE_USE_FIRMWARE_FILE
 		EXTRA_CFLAGS += -DENABLE_USE_FIRMWARE_FILE
 	endif
 	ifeq ($(CONFIG_CTAP_SHORT_OFF), y)
+		ccflags-y += -DCONFIG_CTAP_SHORT_OFF
 		EXTRA_CFLAGS += -DCONFIG_CTAP_SHORT_OFF
 	endif
 	ifeq ($(ENABLE_MULTIPLE_TX_QUEUE), y)
+		ccflags-y += -DENABLE_MULTIPLE_TX_QUEUE
 		EXTRA_CFLAGS += -DENABLE_MULTIPLE_TX_QUEUE
 	endif
 	ifeq ($(ENABLE_RSS_SUPPORT), y)
 		r8168-objs += r8168_rss.o
+		ccflags-y += -DENABLE_RSS_SUPPORT
 		EXTRA_CFLAGS += -DENABLE_RSS_SUPPORT
 	endif
 	ifeq ($(ENABLE_LIB_SUPPORT), y)
 		r8168-objs += r8168_lib.o
+		ccflags-y += -DENABLE_LIB_SUPPORT
 		EXTRA_CFLAGS += -DENABLE_LIB_SUPPORT
 	endif
 	ifeq ($(DISABLE_WOL_SUPPORT), y)
+		ccflags-y += -DDISABLE_WOL_SUPPORT
 		EXTRA_CFLAGS += -DDISABLE_WOL_SUPPORT
 	endif
 	ifeq ($(ENABLE_GIGA_LITE), y)
+		ccflags-y += -DENABLE_GIGA_LITE
 		EXTRA_CFLAGS += -DENABLE_GIGA_LITE
 	endif
 else
 	BASEDIR := /lib/modules/$(shell uname -r)
+	# Support KERNELDIR being passed in (for DKMS)
 	KERNELDIR ?= $(BASEDIR)/build
 	PWD :=$(shell pwd)
-	DRIVERDIR := $(shell find $(BASEDIR)/kernel/drivers/net/ethernet -name realtek -type d)
+	DRIVERDIR := $(shell find $(BASEDIR)/kernel/drivers/net/ethernet -name realtek -type d 2>/dev/null)
 	ifeq ($(DRIVERDIR),)
-		DRIVERDIR := $(shell find $(BASEDIR)/kernel/drivers/net -name realtek -type d)
+		DRIVERDIR := $(shell find $(BASEDIR)/kernel/drivers/net -name realtek -type d 2>/dev/null)
 	endif
 	ifeq ($(DRIVERDIR),)
-		DRIVERDIR := $(BASEDIR)/kernel/drivers/net
+		DRIVERDIR := $(BASEDIR)/kernel/drivers/net/ethernet/realtek
 	endif
 	RTKDIR := $(subst $(BASEDIR)/,,$(DRIVERDIR))
 

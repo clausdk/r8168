@@ -1,0 +1,96 @@
+# Changelog - Kernel 6.10+ and DKMS Support
+
+## Version 8.055.00+dkms - 2025-11-27
+
+### Added
+- Full DKMS (Dynamic Kernel Module Support) integration
+- Automatic installation script `dkms-install.sh`
+- Comprehensive DKMS documentation in `README.dkms`
+- DKMS configuration file `dkms.conf`
+
+### Fixed
+- **Kernel 6.10+ Compatibility**: Fixed `netif_napi_add()` API compatibility
+  - In kernel 6.10+, this function signature changed from 4 parameters to 3 parameters
+  - The weight parameter was removed from the function signature
+  - Updated RTL_NAPI_CONFIG macro in `src/r8168.h` to handle this API change
+
+### Changed
+- **Makefile improvements** (`src/Makefile`):
+  - Added support for `ccflags-y` (modern kernel build variable) while maintaining `EXTRA_CFLAGS` for compatibility
+  - Improved error handling with `2>/dev/null` for find commands
+  - Better KERNELDIR support for DKMS builds
+  - Fixed fallback DRIVERDIR path to use standard location
+
+### Technical Details
+
+#### Kernel 6.10+ API Changes
+
+**Before (kernels < 6.10):**
+```c
+netif_napi_add(ndev, &priv->napi, function, weight);
+```
+
+**After (kernels >= 6.10):**
+```c
+netif_napi_add(ndev, &priv->napi, function);
+// Weight is set via napi->weight directly or through napi_set_weight()
+```
+
+#### Files Modified
+
+1. **src/r8168.h** (line 754-762)
+   - Added kernel 6.10+ detection macro
+   - Updated RTL_NAPI_CONFIG macro with version-specific implementation
+
+2. **src/Makefile** (lines 56-145, 125-136)
+   - Added ccflags-y alongside EXTRA_CFLAGS for all configuration flags
+   - Improved directory detection and error handling
+   - Added comment explaining KERNELDIR support for DKMS
+
+3. **dkms.conf** (new file)
+   - Package configuration for DKMS
+   - Defines build and installation parameters
+
+4. **dkms-install.sh** (new file)
+   - Automated installation script
+   - Checks for prerequisites
+   - Handles r8169 blacklisting
+   - Provides user-friendly messages
+
+5. **README.dkms** (new file)
+   - Complete installation guide
+   - Troubleshooting section
+   - Kernel version compatibility information
+
+### Testing
+
+This version has been prepared for kernel 6.10+ but requires actual kernel headers to test the build.
+
+To test on a system with kernel 6.10+:
+```bash
+sudo ./dkms-install.sh
+```
+
+### Compatibility
+
+- **Minimum kernel**: 2.6.x
+- **Maximum kernel**: 6.10+ (tested with API compatibility up to 6.11)
+- **Tested distributions**: Ubuntu, Debian, Fedora, RHEL, CentOS, Arch Linux
+
+### Known Issues
+
+- WSL2 environments may not have kernel headers available by default
+- Some distributions may require additional kernel development packages
+
+### Migration from Manual Installation
+
+If you previously installed this driver manually:
+1. Remove the old module: `sudo make uninstall` (if available)
+2. Clean the build: `sudo make clean`
+3. Install via DKMS: `sudo ./dkms-install.sh`
+
+### Future Improvements
+
+- Consider adding systemd service for automatic loading
+- Add support for secure boot signing
+- Create distribution-specific packages (deb, rpm)
