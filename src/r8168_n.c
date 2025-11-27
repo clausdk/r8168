@@ -7310,6 +7310,16 @@ static int rtl8168_alloc_rx_page(struct rtl8168_private *tp,
         return 0;
 }
 
+static void rtl8168_page_pool_release(struct page_pool *pool,
+                                      struct page *page)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,12,0)
+        page_pool_put_full_page(pool, page, false);
+#else
+        page_pool_release_page(pool, page);
+#endif
+}
+
 struct rtl8168_coalesce_profile {
         u16 reg;
         u32 usecs;
@@ -7356,21 +7366,43 @@ static u8 rtl8168_level_from_usecs(u32 usecs)
         return 2;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,12,0)
+static int rtl8168_get_coalesce(struct net_device *dev,
+                                struct ethtool_coalesce *coal,
+                                struct kernel_ethtool_coalesce *kernel_coal,
+                                struct netlink_ext_ack *extack)
+#else
 static int rtl8168_get_coalesce(struct net_device *dev,
                                 struct ethtool_coalesce *coal)
+#endif
 {
         struct rtl8168_private *tp = netdev_priv(dev);
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,12,0)
+        (void)kernel_coal;
+        (void)extack;
+#endif
         rtl8168_fill_coalesce(tp, coal);
         return 0;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,12,0)
+static int rtl8168_set_coalesce(struct net_device *dev,
+                                struct ethtool_coalesce *coal,
+                                struct kernel_ethtool_coalesce *kernel_coal,
+                                struct netlink_ext_ack *extack)
+#else
 static int rtl8168_set_coalesce(struct net_device *dev,
                                 struct ethtool_coalesce *coal)
+#endif
 {
         struct rtl8168_private *tp = netdev_priv(dev);
         u8 level;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,12,0)
+        (void)kernel_coal;
+        (void)extack;
+#endif
         /* Only basic RX/TX coalescing knobs are supported */
         if (coal->rx_max_coalesced_frames != coal->tx_max_coalesced_frames &&
             coal->tx_max_coalesced_frames)
@@ -32040,7 +32072,7 @@ rtl8168_rx_interrupt(struct net_device *dev,
                                 skb = NULL;
                                 goto release_descriptor_pp;
                         }
-                        page_pool_release_page(ring->page_pool, page);
+                        rtl8168_page_pool_release(ring->page_pool, page);
                 } else
 #endif
                 {
